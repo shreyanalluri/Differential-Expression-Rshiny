@@ -31,18 +31,30 @@ ui <- fluidPage(
     tabPanel("Counts",
              sidebarLayout(
                sidebarPanel(
-                 fileInput("Browse", "Normalized Counts Data", accept = ".csv")
+                 fileInput("Browsecounts", "Normalized Counts Data", accept = ".csv"),
+                 # Input: Simple integer interval ----
+                 sliderInput("nonzero_slider", "Select the threshold for number of non-zero samples/gene:",
+                             min = 0, max = 1000,
+                             value = 500),
+                 
+                 # Input: Decimal interval with step value ----
+                 sliderInput("variance_slider", "Variance percentile:",
+                             min = 0, max = 100,
+                             value = 50, step = 1)
                ),
                mainPanel(
                  tabsetPanel(
-                   tabPanel("Summary for Tab2",
-                            tableOutput("summary_table_tab2")
+                   tabPanel("Summary",
+                            tableOutput("norm_counts_filter_table")
                    ),
-                   tabPanel("Table for Tab2",
-                            dataTableOutput("datatable_tab2")
-                   ),
-                   tabPanel("Plots for Tab2"
+                   tabPanel("Scatterplot",
                             #, plotOutput("plot_tab2")
+                   ),
+                   tabPanel("Heatmap"
+                            #, plotOutput("plot_tab3")
+                   ),
+                   tabPanel("PCA"
+                            #, plotOutput("plot_tab4")
                    )
                  )
                )
@@ -90,6 +102,15 @@ ui <- fluidPage(
     )
   )
 )
+
+
+
+
+
+
+
+
+
 
 # Define the server function
 server <- function(input, output, session) {
@@ -162,6 +183,33 @@ server <- function(input, output, session) {
       tagList(plots)
     })
   })
+  
+  # Read the normalized counts data
+  normalized_counts <- reactive({
+    req(input$Browsecounts)
+    data <- read.csv(input$Browsecounts$datapath)
+    return(data)
+  })
+  
+  # Perform analysis on the normalized counts data
+  filtered_data <- reactive({
+  req(normalized_counts(), input$nonzero_slider, input$variance_slider)
+  
+  # Filter based on the number of non-zero samples/gene
+  non_zero_threshold <- input$nonzero_slider
+  filtered_data <- normalized_counts()[, colSums(normalized_counts() != 0) >= non_zero_threshold, drop = FALSE]
+  
+  # Filter based on variance
+  variance_threshold <- quantile(apply(filtered_data, 2, var), probs = input$variance_slider / 100)
+  filtered_data <- filtered_data[, apply(filtered_data, 2, var) >= variance_threshold, drop = FALSE]
+  
+  return(as.data.frame(filtered_data))  # Ensure it is a data frame
+})
+
+# Create a summary table for the filtered data
+output$norm_counts_filter_table <- renderTable({
+  filtered_data()
+})
 }
 
 # Run the app
