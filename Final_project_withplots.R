@@ -1,4 +1,6 @@
 library(dplyr)
+library(tidyr)
+library(matrixStats)
 library(ggplot2)
 library(bslib)
 library(shiny)
@@ -6,12 +8,13 @@ library(colourpicker)
 
 # Define the UI
 ui <- fluidPage(
+  theme = bslib::bs_theme(version = 5, bootswatch = "litera"),
   titlePanel("Differential Expression Analysis"),
   tabsetPanel(
     tabPanel("Samples",
              sidebarLayout(
                sidebarPanel(
-                 fileInput("Browse", "Sample file", accept = ".csv")
+                 fileInput("Browse", "Sample file", accept = c(".csv",".tsv"))
                ),
                mainPanel(
                  tabsetPanel(
@@ -45,10 +48,10 @@ ui <- fluidPage(
                mainPanel(
                  tabsetPanel(
                    tabPanel("Summary",
-                            tableOutput("norm_counts_filter_table")
+                            tableOutput("counts_filter_summary_table")
                    ),
                    tabPanel("Scatterplot",
-                            #, plotOutput("plot_tab2")
+                            plotOutput("filtered_genes_plot")
                    ),
                    tabPanel("Heatmap"
                             #, plotOutput("plot_tab3")
@@ -63,18 +66,24 @@ ui <- fluidPage(
     tabPanel("DE",
              sidebarLayout(
                sidebarPanel(
-                 fileInput("BrowseTab3", "Sample file for Tab3", accept = ".csv")
+                 fileInput("BrowseDE", "Differential expression data", accept = c(".csv",".tsv")),
+                 sliderInput("pval_slider", "p-value Threshold",
+                             min = 0, max = 1,
+                             value = 0.5,step = 0.001),
                ),
                mainPanel(
                  tabsetPanel(
-                   tabPanel("Summary for Tab3",
-                            tableOutput("summary_table_tab3")
+                   tabPanel("Differential Expression Data",
+                            dataTableOutput("DE_datatable")
                    ),
-                   tabPanel("Table for Tab3",
-                            dataTableOutput("datatable_tab3")
+                   tabPanel("p-value Plot"
+                            , plotOutput("DE_pval_plot")
                    ),
-                   tabPanel("Plots for Tab3"
-                            #, plotOutput("plot_tab3")
+                   tabPanel("Log2 FC Plot"
+                            , plotOutput("DE_log2fc_plot")
+                   ),
+                   tabPanel("Volcano Plot"
+                            , plotOutput("DE_volcano_plot")
                    )
                  )
                )
@@ -103,18 +112,12 @@ ui <- fluidPage(
   )
 )
 
-
-
-
-
-
-
-
-
-
 # Define the server function
 server <- function(input, output, session) {
-  
+
+###################
+### Summary Tab ###
+###################
   # Read the sample info file
   sample_info <- reactive({
     req(input$Browse)
@@ -173,7 +176,7 @@ server <- function(input, output, session) {
     plots <- lapply(numeric_var_names, function(var_name) {
       hist_output_id <- paste0("hist_", var_name)
       output[[hist_output_id]] <- renderPlot({
-        hist(sample_info()[[var_name]], main = paste("Histogram for", var_name),
+        hist(sample_info()[[var_name]], main = paste(var_name, "Histogram"),
              xlab = var_name, col = "lightblue", border = "black")
       })
       plotOutput(hist_output_id)
@@ -184,6 +187,11 @@ server <- function(input, output, session) {
     })
   })
   
+  
+###################
+### Counts Tab ###
+###################
+  
   # Read the normalized counts data
   normalized_counts <- reactive({
     req(input$Browsecounts)
@@ -191,25 +199,187 @@ server <- function(input, output, session) {
     return(data)
   })
   
-  # Perform analysis on the normalized counts data
-  filtered_data <- reactive({
-  req(normalized_counts(), input$nonzero_slider, input$variance_slider)
+  filtered_genes <- reactive({
+    # Filter genes based on variance and non-zero samples
+    variance_filtered <- apply(normalized_counts(), 1, function(row) var(row) >= input$variance_slider)
+    nonzero_samples_filtered <- apply(normalized_counts() != 0, 1, function(row) sum(row) >= input$nonzero_slider)
+    
+    selected_genes <- rownames(normalized_counts())[variance_filtered & nonzero_samples_filtered]
+    
+    # Create a table for display
+    filtered_genes_table <- data.frame(
+      Gene = selected_genes,
+      Variance = apply(normalized_counts()[selected_genes, ], 1, var),
+      NonZeroSamples = apply(normalized_counts()[selected_genes, ] != 0, 1, sum)
+    )
+    
+    filtered_genes_table
+  })
   
-  # Filter based on the number of non-zero samples/gene
-  non_zero_threshold <- input$nonzero_slider
-  filtered_data <- normalized_counts()[, colSums(normalized_counts() != 0) >= non_zero_threshold, drop = FALSE]
+  output$filtered_genes_table <- renderDataTable({
+    filtered_genes()
+  })
   
-  # Filter based on variance
-  variance_threshold <- quantile(apply(filtered_data, 2, var), probs = input$variance_slider / 100)
-  filtered_data <- filtered_data[, apply(filtered_data, 2, var) >= variance_threshold, drop = FALSE]
+  observeEvent(c(input$variance_slider, input$nonzero_slider), {
+    output$counts_filter_summary_table <- renderTable({
+      data <- normalized_counts()
+      total_genes <- nrow(data)
+      total_samples <- ncol(data)
+      filtered_genes_count <- nrow(filtered_genes())
+      not_filtered_genes_count <- total_genes - filtered_genes_count
+      
+      cbind(
+        "Total Samples" = total_samples,
+        "Total Genes" = total_genes,
+        "Genes Passing Filter" = filtered_genes_count,
+        "Genes Not Passing Filter" = not_filtered_genes_count,
+        "% Passing Filter" = sprintf("%.2f%%", 100 * filtered_genes_count / total_genes),
+        "% Not Passing Filter" = sprintf("%.2f%%", 100 * not_filtered_genes_count / total_genes)
+      )
+    })
+    
+    
+    ####For this table, I need the dataframe to be gene:median count, variance, nzeroes 
+    # output$filtered_genes_plot <- renderPlot({
+    #   variance_filtered <- apply(normalized_counts(), 1, function(row) var(row) >= input$variance_slider)
+    #   nonzero_samples_filtered <- apply(normalized_counts() != 0, 1, function(row) sum(row) >= input$nonzero_slider)
+    # 
+    #   filtered_plot <- normalized_counts()[variance_filtered & nonzero_samples_filtered, ]
+    # 
+    #   gene_names <- colnames(filtered_plot)
+    # 
+    #   plot_tibble <- tibble(gene_name = gene_names, !!filtered_plot) %>%
+    #     pivot_longer(cols = -gene_name, names_to = "sample_name", values_to = "count") %>%
+    #     group_by(gene_name) %>%
+    #     summarize(
+    #       median_count = median(count),
+    #       num_zeroes = sum(count == 0),
+    #       variance = colVars(as.matrix(count))[1]
+    #     )
+    # 
+    # })
+    
+    # output$filtered_genes_plot <- renderPlot({
+    #   variance_filtered <- apply(normalized_counts(), 1, function(row) var(row) >= input$variance_slider)
+    #   nonzero_samples_filtered <- apply(normalized_counts() != 0, 1, function(row) sum(row) >= input$nonzero_slider)
+    #   
+    #   filtered_plot <- normalized_counts()[variance_filtered & nonzero_samples_filtered, ]
+    #   
+    #   gene_names <- rownames(filtered_plot)
+    #   
+    #   # Convert all columns to numeric
+    #   filtered_plot <- apply(filtered_plot, 2, as.numeric)
+    #   
+    #   plot_tibble <- tibble(gene_name = gene_names, !!filtered_plot) %>%
+    #     pivot_longer(cols = -gene_name, names_to = "sample_name", values_to = "count") %>%
+    #     group_by(gene_name) %>%
+    #     summarize(
+    #       median_count = median(count, na.rm = TRUE),
+    #       num_zeroes = sum(count == 0, na.rm = TRUE),
+    #       variance = colVars(as.matrix(count))[1, na.rm = TRUE]
+    #     )
+    #   
+    #   # Scatterplot of median count vs variance
+    #   ggplot(plot_tibble, aes(x = median_count, y = variance)) +
+    #     geom_point(color = "darkblue", alpha = 0.7) +
+    #     labs(title = "Scatterplot of Median Count vs Variance",
+    #          x = "Median Count",
+    #          y = "Variance") +
+    #     theme_minimal()
+    # })
+    
+    
+    
+  })
   
-  return(as.data.frame(filtered_data))  # Ensure it is a data frame
-})
+  
+  ###################
+  ### DE Tab ###
+  ###################
+  
+  diff_exp_data <- reactive({
+    req(input$BrowseDE)
+    data <- read.csv(input$BrowseDE$datapath)
+    return(data)
+  })
+  
+  output$DE_datatable <- renderDataTable({
+    diff_exp_data()
+  })
+  
 
-# Create a summary table for the filtered data
-output$norm_counts_filter_table <- renderTable({
-  filtered_data()
-})
+  label_res <- function(deseq2_res, padj_threshold) {
+    # Create a tibble from DESeq2 results
+    deseq2_tibble <- as_tibble(deseq2_res)
+    
+    # Add volc_plot_status column based on your criteria using dplyr
+    deseq2_tibble <- deseq2_tibble %>%
+      mutate(
+        volc_plot_status = ifelse(
+          padj < padj_threshold & log2FoldChange > 0, "UP",
+          ifelse(
+            padj < padj_threshold & log2FoldChange < 0, "DOWN", "NS"
+          )
+        )
+      )
+    
+    return(deseq2_tibble)
+  }
+  
+  plot_pvals <- function(labeled_results) {
+    pvalue_histogram <- ggplot(labeled_results, aes(x = pvalue)) +
+      geom_histogram(binwidth = 0.02, fill = "pink", color = "magenta") +  # Adjust binwidth and colors as needed
+      labs(x = "pvalue",
+           y = "count") +
+      theme_minimal()
+    
+    # Print the histogram
+    return(pvalue_histogram)
+  }
+  
+  plot_log2fc <- function(labeled_results, padj_threshold) {
+    plot_data <- labeled_results %>%
+      dplyr::filter(padj < padj_threshold)
+    
+    log2fc_histogram <- ggplot(plot_data, aes(x = log2FoldChange)) +
+      geom_histogram(binwidth = 0.2, fill = "pink",color = "magenta") +  # Adjust binwidth and colors as needed
+      labs(title = "Histogram of Log2FoldChanges for DE Genes",
+           x = "log2FoldChange",
+           y = "count") +
+      theme_minimal()
+    
+    return(log2fc_histogram)
+  }
+  
+  plot_volcano <- function(labeled_results) {
+    plot_data <- labeled_results %>%
+      drop_na(volc_plot_status)
+    volcano_plot <- ggplot(plot_data, aes(x = log2FoldChange, y = -log10(padj))) +
+      geom_point(aes(color = volc_plot_status)) +
+      labs(x = "log2FoldChange", y = "-log10(padj)") +
+      ggtitle("Volcano plot of differential expression results") +
+      geom_hline(yintercept= 0, linetype = 'dashed', col="black") +
+      theme_minimal()
+    
+    return(volcano_plot)
+  }
+  
+  observeEvent(input$pval_slider, {
+    
+    output$DE_pval_plot <- renderPlot({
+      plot_pvals(label_res(diff_exp_data(), input$pval_slider))
+    })
+    
+    output$DE_log2fc_plot <- renderPlot({
+      plot_log2fc(label_res(diff_exp_data(), input$pval_slider), input$pval_slider)
+    })
+    
+    output$DE_volcano_plot <- renderPlot({
+      plot_volcano(label_res(diff_exp_data(), input$pval_slider))
+      
+    })
+    
+  })
 }
 
 # Run the app
