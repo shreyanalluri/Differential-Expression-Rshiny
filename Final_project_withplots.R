@@ -34,7 +34,7 @@ ui <- fluidPage(
     tabPanel("Counts",
              sidebarLayout(
                sidebarPanel(
-                 fileInput("Browsecounts", "Normalized Counts Data", accept = ".csv"),
+                 fileInput("Browsecounts", "Normalized Counts Data", accept = c(".csv",".tsv")),
                  # Input: Simple integer interval ----
                  sliderInput("nonzero_slider", "Select the threshold for number of non-zero samples/gene:",
                              min = 0, max = 1000,
@@ -47,17 +47,19 @@ ui <- fluidPage(
                ),
                mainPanel(
                  tabsetPanel(
-                   tabPanel("Summary",
-                            tableOutput("counts_filter_summary_table")
+                   tabPanel("Table",
+                            tableOutput("summary_filtered_genes_table")
                    ),
                    tabPanel("Scatterplot",
-                            plotOutput("filtered_genes_plot")
+                            plotOutput("scatter_variance"),
+                            plotOutput("scatter_zeros")
+                            
                    ),
                    tabPanel("Heatmap"
-                            #, plotOutput("plot_tab3")
+                            , plotOutput("counts_heatmap")
                    ),
-                   tabPanel("PCA"
-                            #, plotOutput("plot_tab4")
+                   tabPanel("PCA", 
+                            plotOutput("counts_pca")
                    )
                  )
                )
@@ -199,99 +201,112 @@ server <- function(input, output, session) {
     return(data)
   })
   
-  filtered_genes <- reactive({
-    # Filter genes based on variance and non-zero samples
-    variance_filtered <- apply(normalized_counts(), 1, function(row) var(row) >= input$variance_slider)
-    nonzero_samples_filtered <- apply(normalized_counts() != 0, 1, function(row) sum(row) >= input$nonzero_slider)
+ 
+  ###Create a filtered table 
+  filter_counts <- function(norm_counts, var_threshold, zero_threshold) {
+    colnames(norm_counts)[1] <- "gene"
     
-    selected_genes <- rownames(normalized_counts())[variance_filtered & nonzero_samples_filtered]
+    filtered_counts_table <- norm_counts %>%
+      rowwise() %>%
+      mutate(
+        variance = var(c_across(-gene), na.rm = TRUE),
+        zero_count = sum(c_across(-gene) == 0, na.rm = TRUE)
+      ) %>%
+      filter(
+        variance > var_threshold,
+        zero_count <= zero_threshold
+      ) %>%
+      select(-variance, -zero_count)
+    return(filtered_counts_table)
+  }
+  ### create summary of filtered table 
+  summary_filter_counts <- function(norm_counts, filtered_counts) {
+    total_genes <- nrow(norm_counts)
+    total_samples <- ncol(norm_counts) - 1
+    passing_filter <- nrow(filtered_counts)
     
-    # Create a table for display
-    filtered_genes_table <- data.frame(
-      Gene = selected_genes,
-      Variance = apply(normalized_counts()[selected_genes, ], 1, var),
-      NonZeroSamples = apply(normalized_counts()[selected_genes, ] != 0, 1, sum)
+    summary_table <- data.frame(
+      "Total Samples" = total_samples,
+      "Total Genes" = total_genes,
+      "Passing Filter Genes" = passing_filter,
+      "Percent Passing Filter" = passing_filter/total_genes * 100,
+      "Not Passing Filter Genes" = total_genes - passing_filter,
+      "Percent Not Passing Filter" = (total_genes - passing_filter)/total_genes * 100
     )
-    
-    filtered_genes_table
-  })
+    return(summary_table)
+  }
+
   
-  output$filtered_genes_table <- renderDataTable({
-    filtered_genes()
-  })
-  
-  observeEvent(c(input$variance_slider, input$nonzero_slider), {
-    output$counts_filter_summary_table <- renderTable({
-      data <- normalized_counts()
-      total_genes <- nrow(data)
-      total_samples <- ncol(data)
-      filtered_genes_count <- nrow(filtered_genes())
-      not_filtered_genes_count <- total_genes - filtered_genes_count
-      
-      cbind(
-        "Total Samples" = total_samples,
-        "Total Genes" = total_genes,
-        "Genes Passing Filter" = filtered_genes_count,
-        "Genes Not Passing Filter" = not_filtered_genes_count,
-        "% Passing Filter" = sprintf("%.2f%%", 100 * filtered_genes_count / total_genes),
-        "% Not Passing Filter" = sprintf("%.2f%%", 100 * not_filtered_genes_count / total_genes)
-      )
+  output$summary_filtered_genes_table <- renderTable({
+    summary_filter_counts(normalized_counts(),filter_counts(normalized_counts(),input$variance_slider,input$nonzero_slider))
     })
-    
-    
-    ####For this table, I need the dataframe to be gene:median count, variance, nzeroes 
-    # output$filtered_genes_plot <- renderPlot({
-    #   variance_filtered <- apply(normalized_counts(), 1, function(row) var(row) >= input$variance_slider)
-    #   nonzero_samples_filtered <- apply(normalized_counts() != 0, 1, function(row) sum(row) >= input$nonzero_slider)
-    # 
-    #   filtered_plot <- normalized_counts()[variance_filtered & nonzero_samples_filtered, ]
-    # 
-    #   gene_names <- colnames(filtered_plot)
-    # 
-    #   plot_tibble <- tibble(gene_name = gene_names, !!filtered_plot) %>%
-    #     pivot_longer(cols = -gene_name, names_to = "sample_name", values_to = "count") %>%
-    #     group_by(gene_name) %>%
-    #     summarize(
-    #       median_count = median(count),
-    #       num_zeroes = sum(count == 0),
-    #       variance = colVars(as.matrix(count))[1]
-    #     )
-    # 
-    # })
-    
-    # output$filtered_genes_plot <- renderPlot({
-    #   variance_filtered <- apply(normalized_counts(), 1, function(row) var(row) >= input$variance_slider)
-    #   nonzero_samples_filtered <- apply(normalized_counts() != 0, 1, function(row) sum(row) >= input$nonzero_slider)
-    #   
-    #   filtered_plot <- normalized_counts()[variance_filtered & nonzero_samples_filtered, ]
-    #   
-    #   gene_names <- rownames(filtered_plot)
-    #   
-    #   # Convert all columns to numeric
-    #   filtered_plot <- apply(filtered_plot, 2, as.numeric)
-    #   
-    #   plot_tibble <- tibble(gene_name = gene_names, !!filtered_plot) %>%
-    #     pivot_longer(cols = -gene_name, names_to = "sample_name", values_to = "count") %>%
-    #     group_by(gene_name) %>%
-    #     summarize(
-    #       median_count = median(count, na.rm = TRUE),
-    #       num_zeroes = sum(count == 0, na.rm = TRUE),
-    #       variance = colVars(as.matrix(count))[1, na.rm = TRUE]
-    #     )
-    #   
-    #   # Scatterplot of median count vs variance
-    #   ggplot(plot_tibble, aes(x = median_count, y = variance)) +
-    #     geom_point(color = "darkblue", alpha = 0.7) +
-    #     labs(title = "Scatterplot of Median Count vs Variance",
-    #          x = "Median Count",
-    #          y = "Variance") +
-    #     theme_minimal()
-    # })
-    
-    
-    
+  
+  output$counts_med_v_var_plot <- renderPlot({
+    plot_median_vs_variance(filter_counts(normalized_counts(),input$variance_slider,input$nonzero_slider))
   })
   
+  # Scatter plot for median count vs variance
+  output$scatter_variance <- renderPlot({
+    norm_counts <- normalized_counts()
+    colnames(norm_counts)[1] <- "gene"
+    filtered_counts_table <- filter_counts(norm_counts, input$variance_slider, input$nonzero_slider)
+    
+    # Create a new data frame with calculated values for median and variance
+    plot_data <- norm_counts %>%
+      mutate(
+        median_count = (median(c_across(-gene), na.rm = FALSE)),
+        variance = (var(c_across(-gene), na.rm = FALSE)),
+        status = ifelse(gene %in% filtered_counts_table$gene, "Pass", "Fail")
+      )
+    
+    ggplot(plot_data, aes(x = median_count, y = variance, color = status)) +
+      geom_point() +
+      labs(title = "Median Count vs Variance", x = "Median Count", y = "Variance") +
+      scale_color_manual(values = c("Pass" = "darkblue", "Fail" = "lightblue"))
+  })
+  
+  # Scatter plot for median count vs number of zeros
+  output$scatter_zeros <- renderPlot({
+    norm_counts <- normalized_counts()
+    colnames(norm_counts)[1] <- "gene"
+    filtered_counts_table <- filter_counts(norm_counts, input$variance_slider, input$nonzero_slider)
+    
+    # Create a new data frame with calculated values for median and number of zeros
+    plot_data <- norm_counts %>%
+      mutate(
+        median_count = (median(c_across(-gene), na.rm = FALSE)),
+        zeros = sum(c_across(-gene) == 0, na.rm = FALSE),
+        status = ifelse(gene %in% filtered_counts_table$gene, "Pass", "Fail")
+      )
+    
+    ggplot(plot_data, aes(x = median_count, y = zeros, color = status)) +
+      geom_point() +
+      labs(title = "Median Count vs Number of Zeros", x = "Median Count", y = "Number of Zeros") +
+      scale_color_manual(values = c("Pass" = "darkblue", "Fail" = "lightblue"))
+  })
+  
+  output$counts_heatmap <- renderPlot({
+    heatmap_data <- filter_counts(normalized_counts(),input$variance_slider,input$nonzero_slider)
+    heatmap_data <- as.matrix(heatmap_data[-1, -1])
+    heatmap(heatmap_data)
+  })
+  
+  output$counts_pca <- renderPlot({
+    pca_data <- filter_counts(normalized_counts(),input$variance_slider,input$nonzero_slider)
+    pca <- prcomp(t(pca_data[-1]))
+    
+    pc1_variance <- round(100 * pca$sdev[1]^2 / sum(pca$sdev^2), 0)
+    pc2_variance <- round(100 * pca$sdev[2]^2 / sum(pca$sdev^2), 0)
+    
+    # Create axis labels that include the variance information
+    x_label <- paste("PC1: ", pc1_variance, "% variance", sep = "")
+    y_label <- paste("PC2: ", pc2_variance, "% variance", sep = "")
+    
+    pca_scores <- as.data.frame(pca$x)
+    pca_graph <- ggplot(pca_scores, aes(x = PC1, y = PC2)) +
+      geom_point() +
+      labs(x = x_label, y = y_label, title = 'PCA')
+  })
   
   ###################
   ### DE Tab ###
