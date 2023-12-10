@@ -1,10 +1,15 @@
+library(bslib)
+library(colourpicker)
+library(tidyverse)
 library(dplyr)
 library(tidyr)
 library(matrixStats)
 library(ggplot2)
-library(bslib)
+library(ggbeeswarm)
 library(shiny)
-library(colourpicker)
+library(biomaRt)
+library('fgsea')
+library(shinyWidgets)
 
 # Define the UI
 ui <- fluidPage(
@@ -25,7 +30,18 @@ ui <- fluidPage(
                             dataTableOutput("sample_info_datatable")
                    ),
                    tabPanel("Plots",
+                            #sidebarLayout(
+                              #sidebarPanel(
+                                selectInput("sample_plot_type", "Plot type:",
+                                            choices = c("Histogram", "Density Plot", "Violin Plot"),
+                                            selected = "Histogram"),
+                                selectInput("sample_plot_var", "Variable to Plot",
+                                            choices = NULL, selected = NULL),
+                                selectInput("sample_group_var", "Variable to Group by",
+                                            choices = NULL, selected = NULL),
+                              #),
                             uiOutput("sample_info_plot")
+                     #)
                    )
                  )
                )
@@ -35,12 +51,9 @@ ui <- fluidPage(
              sidebarLayout(
                sidebarPanel(
                  fileInput("Browsecounts", "Normalized Counts Data", accept = c(".csv",".tsv")),
-                 # Input: Simple integer interval ----
                  sliderInput("nonzero_slider", "Select the threshold for number of non-zero samples/gene:",
                              min = 0, max = 1000,
                              value = 500),
-                 
-                 # Input: Decimal interval with step value ----
                  sliderInput("variance_slider", "Variance percentile:",
                              min = 0, max = 100,
                              value = 50, step = 1)
@@ -55,11 +68,21 @@ ui <- fluidPage(
                             plotOutput("scatter_zeros")
                             
                    ),
-                   tabPanel("Heatmap"
-                            , plotOutput("counts_heatmap")
+                   tabPanel("Heatmap",
+                              switchInput("log_transform_switch", "Log Transform", value = FALSE),
+                              plotOutput("counts_heatmap")
                    ),
                    tabPanel("PCA", 
-                            plotOutput("counts_pca")
+                            selectInput("plot_type", "Select Plot Type", choices = c("Scatter Plot", "Beeswarm Plot"), selected = "Scatter Plot"),
+                            conditionalPanel(
+                              condition = "input.plot_type == 'Scatter Plot'",
+                              selectInput("pc_selector", "Select Principal Components", choices = NULL, multiple = TRUE)
+                            ),
+                            conditionalPanel(
+                              condition = "input.plot_type == 'Beeswarm Plot'",
+                              numericInput("top_n", "Top N Principal Components", value = 2, min = 1)
+                            ),
+                            plotOutput("pca_plot")
                    )
                  )
                )
@@ -94,18 +117,18 @@ ui <- fluidPage(
     tabPanel("Network",
              sidebarLayout(
                sidebarPanel(
-                 fileInput("BrowseTab4", "Sample file for Tab4", accept = ".csv")
+                 fileInput("Browsefgsea", "fgsea file", accept = c(".csv",".tsv"))
                ),
                mainPanel(
                  tabsetPanel(
-                   tabPanel("Summary for Tab4",
-                            tableOutput("summary_table_tab4")
+                   tabPanel("fgsea results",
+                            dataTableOutput("fgsea_datatable")
                    ),
-                   tabPanel("Table for Tab4",
-                            dataTableOutput("datatable_tab4")
+                   tabPanel("NES plot",
+                            plotOutput("fgsea_NES_plot")
                    ),
-                   tabPanel("Plots for Tab4"
-                            #, plotOutput("plot_tab4")
+                   tabPanel("Scatterplot", 
+                            plotOutput("fgsea_scatter_plot")
                    )
                  )
                )
@@ -153,43 +176,37 @@ server <- function(input, output, session) {
     sample_info()
   })
   
-  # Render histograms dynamically
-  output$sample_info_plot <- renderUI({
-    req(names(sample_info()))  # Ensure data is available
-    
-    numeric_vars <- sapply(sample_info(), is.numeric)
-    numeric_var_names <- names(sample_info())[numeric_vars]
-    
-    plots <- lapply(numeric_var_names, function(var_name) {
-      hist_output_id <- paste0("hist_", var_name)
-      plotOutput(hist_output_id)
-    })
-    
-    tagList(plots)
-  })
-  
-  # Plot histograms
+  # Update choices for selectInput based on the reactive sample_info
   observe({
-    req(names(sample_info()))  # Ensure data is available
-    
     numeric_vars <- sapply(sample_info(), is.numeric)
-    numeric_var_names <- names(sample_info())[numeric_vars]
-    
-    plots <- lapply(numeric_var_names, function(var_name) {
-      hist_output_id <- paste0("hist_", var_name)
-      output[[hist_output_id]] <- renderPlot({
-        hist(sample_info()[[var_name]], main = paste(var_name, "Histogram"),
-             xlab = var_name, col = "lightblue", border = "black")
-      })
-      plotOutput(hist_output_id)
-    })
-    
-    output$sample_info_plot <- renderUI({
-      tagList(plots)
-    })
+    vars <- names(sample_info())[numeric_vars]
+    all_vars <- names(sample_info())
+    updateSelectInput(session, "sample_plot_var", choices = vars, selected = vars[1])
+    updateSelectInput(session, "sample_group_var", choices = all_vars, selected = all_vars[1])
   })
   
+  # Render selected plot dynamically
+  output$sample_info_plot <- renderUI({
+    req(sample_info())  # Ensure data is available
+    
+    plot_output_id <- paste0("plot_", input$sample_plot_var, "_", input$sample_group_var)
+    plotOutput(plot_output_id)
+  })
   
+  # Plot selected plot
+  observe({
+    req(sample_info())  # Ensure data is available
+    
+    output[[paste0("plot_", input$sample_plot_var, "_", input$sample_group_var)]] <- renderPlot({
+      ggplot(sample_info(), aes_string(x = input$sample_plot_var, fill = input$sample_group_var)) +
+        switch(input$sample_plot_type,
+               "Histogram" = geom_histogram(position = "identity", bins = 30, alpha = 0.7),
+               "Violin Plot" = geom_violin(alpha = 0.7),
+               "Density Plot" = geom_density(alpha = 0.7)
+        ) +
+        labs(title = paste(input$sample_plot_type, "of", input$sample_plot_var), x = input$sample_plot_var, y = ifelse(input$sample_plot_type == "Density Plot", "Density", "Count"))
+    })
+  })
 ###################
 ### Counts Tab ###
 ###################
@@ -207,7 +224,7 @@ server <- function(input, output, session) {
     colnames(norm_counts)[1] <- "gene"
     
     filtered_counts_table <- norm_counts %>%
-      rowwise() %>%
+      dplyr::rowwise() %>%
       mutate(
         variance = var(c_across(-gene), na.rm = TRUE),
         zero_count = sum(c_across(-gene) == 0, na.rm = TRUE)
@@ -216,7 +233,7 @@ server <- function(input, output, session) {
         variance > var_threshold,
         zero_count <= zero_threshold
       ) %>%
-      select(-variance, -zero_count)
+      dplyr::select(-variance, -zero_count)
     return(filtered_counts_table)
   }
   ### create summary of filtered table 
@@ -286,26 +303,48 @@ server <- function(input, output, session) {
   })
   
   output$counts_heatmap <- renderPlot({
-    heatmap_data <- filter_counts(normalized_counts(),input$variance_slider,input$nonzero_slider)
+    heatmap_data <- filter_counts(normalized_counts(), input$variance_slider, input$nonzero_slider)
     heatmap_data <- as.matrix(heatmap_data[-1, -1])
+    
+    # Check if log transform switch is ON
+    if (input$log_transform_switch) {
+      # Log10 transform the data
+      heatmap_data <- log10(heatmap_data + 1)  # Adding 1 to avoid log(0)
+    }
+    
     heatmap(heatmap_data)
   })
   
-  output$counts_pca <- renderPlot({
-    pca_data <- filter_counts(normalized_counts(),input$variance_slider,input$nonzero_slider)
+  observe({
+    pca_data <- filter_counts(normalized_counts(), input$variance_slider, input$nonzero_slider)
+    pca <- prcomp(t(pca_data[-1]))
+    updateSelectInput(session, "pc_selector", choices = colnames(pca$x), selected = colnames(pca$x)[1:2])
+  })
+  
+  output$pca_plot <- renderPlot({
+    pca_data <- filter_counts(normalized_counts(), input$variance_slider, input$nonzero_slider)
     pca <- prcomp(t(pca_data[-1]))
     
-    pc1_variance <- round(100 * pca$sdev[1]^2 / sum(pca$sdev^2), 0)
-    pc2_variance <- round(100 * pca$sdev[2]^2 / sum(pca$sdev^2), 0)
-    
-    # Create axis labels that include the variance information
-    x_label <- paste("PC1: ", pc1_variance, "% variance", sep = "")
-    y_label <- paste("PC2: ", pc2_variance, "% variance", sep = "")
-    
-    pca_scores <- as.data.frame(pca$x)
-    pca_graph <- ggplot(pca_scores, aes(x = PC1, y = PC2)) +
-      geom_point() +
-      labs(x = x_label, y = y_label, title = 'PCA')
+    if (input$plot_type == "Scatter Plot") {
+      selected_pcs <- input$pc_selector[1:2]
+      
+      # Scatter plot for selected PCs
+      pca_scores <- as.data.frame(pca$x[, selected_pcs])
+      ggplot(pca_scores, aes_string(x = selected_pcs[1], y = selected_pcs[2])) +
+        geom_point() +
+        labs(x = paste(selected_pcs[1], "(", round(100 * pca$sdev[which(colnames(pca$x) == selected_pcs[1])]^2 / sum(pca$sdev^2), 0), "% variance)"),
+             y = paste(selected_pcs[2], "(", round(100 * pca$sdev[which(colnames(pca$x) == selected_pcs[2])]^2 / sum(pca$sdev^2), 0), "% variance)"),
+             title = 'PCA')
+    } else {
+      # Beeswarm plot for top N PCs
+      # Beeswarm plot for top N PCs
+      top_n_pcs <- paste0("PC", seq_len(min(input$top_n, ncol(pca$x))))
+      pca_scores <- as.data.frame(pca$x[, top_n_pcs])
+      
+      ggplot(pca_scores, aes(x = factor(1), y = pca_scores[[1]])) +
+        geom_beeswarm() +
+        labs(x = "Top Principal Components", y = "", title = 'Top N PCA')
+    }
   })
   
   ###################
@@ -395,6 +434,101 @@ server <- function(input, output, session) {
     })
     
   })
+  
+  ###################
+  ###FGSEA Tab ###
+  ###################
+  
+  fgsea_table <- function(diff_exp_df) {
+    # Map Ensembl gene ids to HGNC symbols
+    diff_exp_gsea <- as.data.frame(diff_exp_df)  # Convert to data frame if needed
+    #ensembl <- useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl")
+    # gene_map <- as.data.frame(
+    #   getBM(
+    #     attributes = c("ensembl_gene_id", "hgnc_symbol", "description"),
+    #     mart = ensembl
+    #   )
+    # )
+    
+    #diff_exp_gsea <- left_join(diff_exp_gsea, gene_map, by = c("row" = "ensembl_gene_id"))
+    
+    # Simplify table for analysis, rank, and turn into a list for fgsea
+    diff_exp_gsea_trim <- diff_exp_gsea %>% 
+      dplyr::select(symbol, log2FoldChange) %>% 
+      na.omit() %>% 
+      distinct() %>% 
+      group_by(symbol) %>% 
+      summarize(log2FoldChange = mean(log2FoldChange)) %>%
+      arrange(desc(log2FoldChange)) %>%
+      deframe()
+    
+    # Perform fgsea
+    pathways_hallmark <- fgsea::gmtPathways('h.all.v2023.2.Hs.symbols.gmt')
+    fgsea_results <- fgsea::fgsea(pathways_hallmark, diff_exp_gsea_trim, minSize = 15, maxSize = 500)
+    
+    # Convert results to a data frame if needed
+    fgsea_results <- as.data.frame(fgsea_results)
+    
+    return(fgsea_results)
+  }
+  
+  ###plot top pathways as barplot 
+  top_pathways <- function(fgsea_results, num_paths) {
+    
+    # barplot() function is used to
+    # plot the bar and horiz field is
+    # used to plot bar horizontally
+    
+    plt_top <- fgsea_results %>%
+      arrange(NES)%>%
+      head(num_paths)
+    plt_bottom <- fgsea_results %>%
+      arrange(NES) %>%
+      tail(num_paths)
+    
+    plt_data <- rbind(plt_top,plt_bottom)
+    
+    plt_data$color <- ifelse(plt_data$NES < 0, "Negative", "Positive") 
+    plt_data <- plt_data %>%
+      arrange(NES)
+    plt <-ggplot(data=plt_data, aes(x=NES, y=reorder(pathway,+NES),fill = color)) +
+      geom_bar(stat="identity")+
+      theme(axis.text = element_text(size = 4),  # Adjust the font size of axis labels
+            axis.title = element_text(size = 6)) + 
+      guides(fill = 'none')+
+      labs(x = "Normalized Enrichment Score (NES)", y = '',title = "fgsea results for Hallmark MSigDB gene set")
+    return(plt)
+  }
+  
+  ###Scatter plot of NES on x-axis and -log10 adjusted p-value on y-axis, with gene sets below threshold in grey color
+  fgsea_scatter <- function(fgsea_results, padj_threshold) {
+    significant_gene_sets <- fgsea_results$pathway[fgsea_results$padj < padj_threshold]
+    
+    # Scatter plot
+    fgsea_scatter_plot <- ggplot(fgsea_results, 
+                                 aes(x = NES, y = -log10(padj), 
+                                     color = pathway %in% significant_gene_sets)) +
+      geom_point() +
+      scale_color_manual(values = c('FALSE' = "grey", 'TRUE' = "red")) +  # Adjust color for significance
+      labs(x = "Normalized Enrichment Score (NES)", y = "-log10(Adjusted P-value)",
+           title = "Scatter plot of NES vs -log10 adjusted p-value") +
+      theme_minimal()
+    return(fgsea_scatter_plot)
+  }
+  
+  
+  output$fgsea_datatable <- renderDataTable({
+    fgsea_table(diff_exp_data())
+  })
+  
+  output$fgsea_NES_plot <- renderPlot({
+    top_pathways(fgsea_table(diff_exp_data()),6)
+  })
+  
+  output$fgsea_scatter_plot <- renderPlot({
+    fgsea_scatter(fgsea_table(diff_exp_data()),0.05)
+  })
+  
 }
 
 # Run the app
