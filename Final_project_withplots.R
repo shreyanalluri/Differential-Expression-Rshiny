@@ -5,6 +5,7 @@ library(dplyr)
 library(tidyr)
 library(matrixStats)
 library(ggplot2)
+library(plotly)
 library(ggbeeswarm)
 library(shiny)
 library(biomaRt)
@@ -125,7 +126,7 @@ ui <- fluidPage(
                             dataTableOutput("fgsea_datatable")
                    ),
                    tabPanel("NES plot",
-                            plotOutput("fgsea_NES_plot")
+                            plotlyOutput("fgsea_NES_plot")
                    ),
                    tabPanel("Scatterplot", 
                             plotOutput("fgsea_scatter_plot")
@@ -491,12 +492,20 @@ server <- function(input, output, session) {
     plt_data$color <- ifelse(plt_data$NES < 0, "Negative", "Positive") 
     plt_data <- plt_data %>%
       arrange(NES)
-    plt <-ggplot(data=plt_data, aes(x=NES, y=reorder(pathway,+NES),fill = color)) +
-      geom_bar(stat="identity")+
-      theme(axis.text = element_text(size = 4),  # Adjust the font size of axis labels
-            axis.title = element_text(size = 6)) + 
-      guides(fill = 'none')+
-      labs(x = "Normalized Enrichment Score (NES)", y = '',title = "fgsea results for Hallmark MSigDB gene set")
+    
+    plt <- plot_ly(data=plt_data, x=~NES, y=~reorder(pathway, +NES), type="bar", marker=list(color=~color)) %>%
+      layout(title="fgsea results for Hallmark MSigDB gene set",
+             xaxis=list(title="Normalized Enrichment Score (NES)"),
+             yaxis=list(title=""))
+    
+    # plt <-ggplot(data=plt_data, aes(x=NES, y=reorder(pathway,+NES),fill = color)) +
+    #   geom_bar(stat="identity")+
+    #   theme(axis.text = element_text(size = 4),  # Adjust the font size of axis labels
+    #         axis.title = element_text(size = 6)) + 
+    #   guides(fill = 'none')+
+    #   labs(x = "Normalized Enrichment Score (NES)", y = '',title = "fgsea results for Hallmark MSigDB gene set")
+    
+    
     return(plt)
   }
   
@@ -521,7 +530,7 @@ server <- function(input, output, session) {
     fgsea_table(diff_exp_data())
   })
   
-  output$fgsea_NES_plot <- renderPlot({
+  output$fgsea_NES_plot <- renderPlotly({
     top_pathways(fgsea_table(diff_exp_data()),6)
   })
   
