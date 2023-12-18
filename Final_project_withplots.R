@@ -64,7 +64,7 @@ ui <- fluidPage(
                ),
                mainPanel(
                  tabsetPanel(
-                   tabPanel("Table",
+                   tabPanel("Filtering Results",
                             tableOutput("summary_filtered_genes_table")
                    ),
                    tabPanel("Scatterplot",
@@ -115,27 +115,27 @@ ui <- fluidPage(
                mainPanel(
                  tabsetPanel(
                    tabPanel("GSEA Results",
-                            sidebarPanel(
-                              fileInput("Browsefgsea", "fgsea file", accept = c(".csv",".tsv")),
+                            #sidebarPanel(
+                              fileInput("Browsefgsea", "Upload GSEA result file", accept = c(".csv",".tsv")),
                               sliderInput("fgsea_padj_slider", "Select Adjusted p-value threshold",
                                           min = 0, max = 1,
                                           value = 0.5, step = 0.001),
                               radioButtons("nesPathways", "Select NES Pathways:",
                                            choices = c("All", "Positive", "Negative"),
                                            selected = "All"),
-                              downloadButton("fgsea_download_csv", "Download GSEA results")
+                              downloadButton("fgsea_download_csv", "Download GSEA results"),
                               
-                            ),
+                            #),
                             dataTableOutput("fgsea_datatable")
                    ),
-                   tabPanel("NES plot",
+                   tabPanel("Pathway Barplot",
                             sliderInput("NES_padj_slider", "Select Adjusted p-value threshold",
                                         min = 0, max = 1,
                                         value = 0.5, step = 0.001),
                             sliderInput("num_paths_slider", "Number of Pathways", min = 0, max = 50, value = 10, step = 2),
                             plotlyOutput("fgsea_NES_plot")
                    ),
-                   tabPanel("Scatterplot", 
+                   tabPanel("Pathway Scatterplot", 
                             sliderInput("fgseascatter_padj_slider", "Select Adjusted p-value threshold",
                                         min = 0, max = 1,
                                         value = 0.5, step = 0.001),
@@ -636,6 +636,7 @@ server <- function(input, output, session) {
       scale_color_manual(values = c('FALSE' = "grey", 'TRUE' = "darkblue")) +  # Adjust color for significance
       labs(x = "NES", y = "-log10(Adjusted P-value)",
            title = "Scatter plot of NES vs -log10 adjusted p-value") +
+      labs(color = "Significant Pathway")+
       theme_minimal()
     return(fgsea_scatter_plot)
   }
